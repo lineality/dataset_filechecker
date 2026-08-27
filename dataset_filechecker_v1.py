@@ -1396,8 +1396,8 @@ def prompt_interactive_cleaning_configuration(
     print_section_divider("EXPORT FORMAT & DESTINATION")
     target_format = prompt_user_selection(
         "Select output export format",
-        ["csv", "json"],
-        "json",
+        ["csv", "jsonl", "json"],
+        "jsonl",
     )
     remediation_config["export_format"] = target_format
 
@@ -1521,41 +1521,59 @@ def apply_dataset_cleaning_transformations(
 def export_processed_dataset_file(
     processed_dataframe: pd.DataFrame,
     target_file_path: str,
-    export_format: str = "csv",
+    export_format: str = "jsonl",
     delimiter_character: str = ",",
 ) -> None:
     """
-    Serializes and writes the processed DataFrame to disk in CSV or JSON format.
+    Serializes and writes the processed DataFrame to disk in CSV or JSON/JSONL format.
+    Sanitizes all string/object fields by collapsing internal newlines and carriage returns
+    into spaces, ensuring clean single-line records for JSONL ingestion.
 
     Parameters:
         processed_dataframe (pd.DataFrame): DataFrame to serialize.
         target_file_path (str): File destination path.
-        export_format (str): Output format ('csv' or 'json').
+        export_format (str): Output format ('csv', 'json', or 'jsonl').
         delimiter_character (str): Delimiter character for CSV output.
 
     Raises:
-        IOError: If serialization or writing fails.
+        IOError / Exception: If serialization or writing fails.
     """
     try:
-        if export_format.lower() == "csv":
-            processed_dataframe.to_csv(
+        # Work on a copy to avoid mutating the in-memory dataframe
+        export_df: pd.DataFrame = processed_dataframe.copy()
+
+        # Sanitize all string/object columns: collapse \r\n, \n, and \r into a single space
+        for column_name in export_df.columns:
+            if export_df[column_name].dtype == "object":
+                export_df[column_name] = export_df[column_name].map(
+                    lambda val: re.sub(r"[\r\n]+", " ", str(val)).strip() if pd.notna(val) else val
+                )
+
+        format_lower: str = export_format.lower()
+        if format_lower == "csv":
+            export_df.to_csv(
                 target_file_path,
                 sep=delimiter_character,
                 index=False,
                 encoding="utf-8",
             )
-        elif export_format.lower() == "json":
-            processed_dataframe.to_json(
+        elif format_lower in ["json", "jsonl"]:
+            is_jsonl: bool = target_file_path.endswith(".jsonl") or format_lower == "jsonl"
+
+            export_df.to_json(
                 target_file_path,
                 orient="records",
-                lines=False,
-                indent=2,
+                lines=is_jsonl,                 # True outputs 1 JSON object per line
+                indent=None if is_jsonl else 2, # Must be None for strict JSONL
                 date_format="iso",
+                force_ascii=False,              # Preserves UTF-8 characters without \uXXXX escaping
             )
         else:
-            raise ValueError(f"Unsupported export format '{export_format}'. Expected 'csv' or 'json'.")
+            raise ValueError(
+                f"Unsupported export format '{export_format}'. Expected 'csv', 'json', or 'jsonl'."
+            )
 
-        print(f"\n[SUCCESS] Successfully exported {len(processed_dataframe):,} records to: {target_file_path}")
+        print(f"\n[SUCCESS] Successfully exported {len(export_df):,} records to: {target_file_path}")
 
     except Exception as error_exception:
         sys.stderr.write(
@@ -1580,7 +1598,13 @@ def parse_command_line_arguments() -> argparse.Namespace:
     parser.add_argument("--test", type=str, help="Path to evaluation testing partition file (Part B audit).")
     parser.add_argument("--target-column", type=str, default=None, help="Target label column name in train/test audit.")
     parser.add_argument("-o", "--out", type=str, default=None, help="Destination output file path for cleaned data.")
-    parser.add_argument("--format", type=str, choices=["csv", "json"], default=None, help="Target export format.")
+    parser.add_argument(
+        "--format",
+        type=str,
+        choices=["csv", "json", "jsonl"],
+        default="jsonl",
+        help="Target export format.",
+    )
     parser.add_argument("--delimiter", type=str, default=None, help="Explicit delimiter override for CSV input.")
     parser.add_argument("--similarity-threshold", type=float, default=0.85, help="Fuzzy near-duplicate similarity threshold (0.0 to 1.0).")
     parser.add_argument("--non-interactive", action="store_true", help="Run audit only without interactive remediation prompts.")
