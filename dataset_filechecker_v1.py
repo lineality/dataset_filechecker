@@ -1207,6 +1207,7 @@ def prompt_user_selection(prompt_text: str, valid_choices: list[str], default_ch
             return user_response.lower()
         print(f"Invalid selection. Please choose one of: {valid_choices}")
 
+
 def prompt_interactive_cleaning_configuration(
     source_dataframe: pd.DataFrame,
     exact_duplicates_report: dict[str, Any],
@@ -1215,49 +1216,75 @@ def prompt_interactive_cleaning_configuration(
 ) -> dict[str, Any]:
     """
     Presents an interactive terminal Q&A wizard guiding the user through
-    cleaning transformations and export configuration.
+    cleaning transformations, multi-class label binarization, null column
+    filtering thresholds, and export destination configuration.
 
     Parameters:
-        source_dataframe (pd.DataFrame): The audited DataFrame.
-        exact_duplicates_report (dict[str, Any]): Exact duplicates report.
-        mixed_types_report (dict[str, dict[str, int]]): Mixed types report.
-        near_duplicates_report (list[dict[str, Any]] | None): Detected near-duplicate pairs report.
+        source_dataframe (pd.DataFrame): The audited DataFrame to evaluate.
+        exact_duplicates_report (dict[str, Any]): Exact duplicates report containing
+            duplicate counts and index clusters.
+        mixed_types_report (dict[str, dict[str, int]]): Mixed types report mapping
+            column names to frequency distributions of coexisting Python types.
+        near_duplicates_report (list[dict[str, Any]] | None): Detected near-duplicate
+            pairs report with similarity scores and field diffs.
 
     Returns:
-        dict[str, Any]: Structured cleaning configuration parameters.
+        dict[str, Any]: Structured cleaning configuration dictionary containing:
+            - 'drop_exact_duplicates' (bool): Flag indicating duplicate row removal.
+            - 'duplicate_retention_strategy' (str): Retention rule ('first', 'last', 'none').
+            - 'near_duplicate_indices_to_drop' (set[Any]): Specific row indices to remove.
+            - 'mixed_type_remediation_actions' (dict[str, str]): Per-column coercion rules.
+            - 'binary_class_conversion' (dict[str, Any]): Settings for converting a multi-class
+              column to binary [0, 1] integer representation.
+            - 'drop_null_threshold_columns_percentage' (float): Column null drop threshold.
+            - 'export_format' (str): Target export format ('csv', 'jsonl', 'json').
+            - 'export_delimiter' (str): Separator character for CSV exports.
+            - 'target_output_file_path' (str): Destination path for written files.
     """
     print_section_divider("DATASET REMEDIATION & EXPORT CONFIGURATION WIZARD")
+
+    # Initialize the centralized configuration dictionary with standard default settings
     remediation_config: dict[str, Any] = {
         "drop_exact_duplicates": False,
         "duplicate_retention_strategy": "first",
         "near_duplicate_indices_to_drop": set(),
         "mixed_type_remediation_actions": {},
+        "binary_class_conversion": {
+            "enabled": False,
+            "target_column_name": "",
+            "zero_class_values_list": [],
+            "one_class_values_list": [],
+        },
         "drop_null_threshold_columns_percentage": 100.0,
-        "export_format": "csv",
+        "export_format": "jsonl",
         "export_delimiter": ",",
         "target_output_file_path": "",
     }
 
-    # 1. Exact Duplicate Handling
+    # =========================================================================
+    # STEP 1: Exact Duplicate Row Handling
+    # =========================================================================
     if exact_duplicates_report["total_duplicate_rows_count"] > 0:
-        drop_duplicates_choice = prompt_user_selection(
+        drop_duplicates_choice: str = prompt_user_selection(
             "Exact duplicates detected. Would you like to drop duplicate rows?",
             ["y", "n"],
             "y",
         )
         if drop_duplicates_choice == "y":
             remediation_config["drop_exact_duplicates"] = True
-            strategy_choice = prompt_user_selection(
+            strategy_choice: str = prompt_user_selection(
                 "Which duplicate occurrence should be preserved?",
                 ["first", "last", "none"],
                 "first",
             )
             remediation_config["duplicate_retention_strategy"] = strategy_choice
 
-    # 2. Near-Duplicate Handling
+    # =========================================================================
+    # STEP 2: Near-Duplicate Row Resolution
+    # =========================================================================
     if near_duplicates_report and len(near_duplicates_report) > 0:
-        total_pairs_count: int = len(near_duplicates_report)
-        print(f"\n[NEAR-DUPLICATE REMEDIATION] Detected {total_pairs_count} near-duplicate pair(s).")
+        total_near_duplicate_pairs_count: int = len(near_duplicates_report)
+        print(f"\n[NEAR-DUPLICATE REMEDIATION] Detected {total_near_duplicate_pairs_count} near-duplicate pair(s).")
 
         auto_resolve_choice: str = prompt_user_selection(
             "Auto resolve (keep one of each), or manual handling?",
@@ -1307,50 +1334,179 @@ def prompt_interactive_cleaning_configuration(
 
         remediation_config["near_duplicate_indices_to_drop"] = indices_to_drop_set
 
-    # 3. Mixed Data Type Remediation
+    # =========================================================================
+    # STEP 3: Mixed Data Type Remediation
+    # =========================================================================
     if len(mixed_types_report) > 0:
         print("\nMixed-type columns require remediation strategy:")
         for column_name in mixed_types_report:
             print(f"\nColumn: '{column_name}' with types: {mixed_types_report[column_name]}")
-            action_choice = prompt_user_selection(
+            action_choice: str = prompt_user_selection(
                 f"Select conversion strategy for '{column_name}'",
                 ["keep", "numeric", "string"],
                 "string",
             )
             remediation_config["mixed_type_remediation_actions"][column_name] = action_choice
 
-    # 4. Column Null Filtering
+    # =========================================================================
+    # STEP 4: Multi-Class to Binary Class Label Consolidation
+    # =========================================================================
+    print_section_divider("MULTI-CLASS TO BINARY LABEL CONSOLIDATION")
+    binarize_feature_choice: str = prompt_user_selection(
+        "Convert a multi-class column into binary values (0 and 1)?",
+        ["y", "n"],
+        "n",
+    )
+
+    if binarize_feature_choice == "y":
+        all_available_column_names: list[str] = list(source_dataframe.columns)
+        total_columns_count: int = len(all_available_column_names)
+
+        print("\nAvailable dataset columns:")
+        for column_index_counter, current_column_name in enumerate(all_available_column_names, start=1):
+            column_dtype_str: str = str(source_dataframe[current_column_name].dtype)
+            distinct_values_count: int = int(source_dataframe[current_column_name].nunique(dropna=True))
+            print(
+                f"  [{column_index_counter:<2}] {current_column_name:<30} "
+                f"Dtype: {column_dtype_str:<10} Distinct Values: {distinct_values_count}"
+            )
+
+        selected_target_column_name: str = ""
+        while True:
+            column_selection_input: str = input(
+                f"\nSelect column number to binarize (1 - {total_columns_count}): "
+            ).strip()
+
+            if column_selection_input.isdigit():
+                selected_column_number: int = int(column_selection_input)
+                if 1 <= selected_column_number <= total_columns_count:
+                    selected_target_column_name = all_available_column_names[selected_column_number - 1]
+                    break
+                print(f"Selection out of range. Please enter an integer between 1 and {total_columns_count}.")
+            elif column_selection_input in all_available_column_names:
+                selected_target_column_name = column_selection_input
+                break
+            else:
+                print(f"Invalid column entry '{column_selection_input}'. Please choose a valid column index number.")
+
+        # Extract all unique non-null values with their occurrence frequencies
+        target_series: pd.Series = source_dataframe[selected_target_column_name].dropna()
+        distinct_label_value_counts: pd.Series = target_series.value_counts()
+        unique_label_values_list: list[Any] = list(distinct_label_value_counts.index)
+
+        if len(unique_label_values_list) < 2:
+            print(
+                f"\n[WARNING] Column '{selected_target_column_name}' contains only {len(unique_label_values_list)} "
+                f"distinct non-null value(s). Binarization requires at least 2 distinct values. Skipping."
+            )
+        else:
+            print(f"\nUnique values found in column '{selected_target_column_name}':")
+            total_non_null_rows: int = len(target_series)
+            for label_index_counter, label_value in enumerate(unique_label_values_list, start=1):
+                label_occurrence_count: int = int(distinct_label_value_counts[label_value])
+                label_percentage: float = (
+                    round((label_occurrence_count / total_non_null_rows * 100.0), 2)
+                    if total_non_null_rows > 0
+                    else 0.0
+                )
+                print(
+                    f"  [{label_index_counter}] {repr(str(label_value)):<30} "
+                    f"({label_occurrence_count:,} rows, {label_percentage}%)"
+                )
+
+            # Prompt user to select which label(s) become Class 0
+            zero_class_values_list: list[Any] = []
+            while True:
+                zero_class_input_text: str = input(
+                    f"\nEnter the number(s) of the value(s) to set as 0 (comma-separated, e.g. 1 or 1,2): "
+                ).strip()
+
+                if not zero_class_input_text:
+                    print("Input cannot be empty. Please enter at least one label index number for Class 0.")
+                    continue
+
+                parsed_selection_indices: list[int] = []
+                is_input_valid: bool = True
+
+                for token in zero_class_input_text.split(","):
+                    cleaned_token: str = token.strip()
+                    if cleaned_token.isdigit():
+                        parsed_index: int = int(cleaned_token)
+                        if 1 <= parsed_index <= len(unique_label_values_list):
+                            parsed_selection_indices.append(parsed_index)
+                        else:
+                            print(f"Index {parsed_index} is out of range [1 - {len(unique_label_values_list)}].")
+                            is_input_valid = False
+                            break
+                    else:
+                        print(f"Invalid non-integer token: '{cleaned_token}'.")
+                        is_input_valid = False
+                        break
+
+                if is_input_valid and parsed_selection_indices:
+                    # Collect all selected labels for Class 0
+                    selected_unique_indices_set: set[int] = set(parsed_selection_indices)
+                    zero_class_values_list = [
+                        unique_label_values_list[idx - 1] for idx in selected_unique_indices_set
+                    ]
+                    break
+
+            # All remaining unique labels automatically map to Class 1
+            one_class_values_list: list[Any] = [
+                val for val in unique_label_values_list if val not in zero_class_values_list
+            ]
+
+            # Print confirmed binary mapping summary
+            print("\n" + "-" * 60)
+            print("[CONFIRMED BINARY CLASS MAPPING]")
+            print(f"  Target Column: '{selected_target_column_name}'")
+            print(f"  Values mapped to 0 (Negative/Baseline Class): {zero_class_values_list}")
+            print(f"  Values mapped to 1 (Positive Class):          {one_class_values_list}")
+            print("-" * 60)
+
+            remediation_config["binary_class_conversion"] = {
+                "enabled": True,
+                "target_column_name": selected_target_column_name,
+                "zero_class_values_list": zero_class_values_list,
+                "one_class_values_list": one_class_values_list,
+            }
+
+    # =========================================================================
+    # STEP 5: Missing Values (Null) Column Drop Threshold Filtering
+    # =========================================================================
     print_section_divider("MISSING VALUES (NULL) AUDIT & FILTERING")
-    total_rows_count: int = len(source_dataframe)
-    columns_with_missing_data: list[tuple[str, int, float, list[str]]] = []
+    total_dataset_rows_count: int = len(source_dataframe)
+    columns_with_missing_data_summary: list[tuple[str, int, float, list[str]]] = []
 
     for column_name in source_dataframe.columns:
-        null_count: int = int(source_dataframe[column_name].isna().sum())
-        if null_count > 0:
-            null_percentage: float = (
-                round((null_count / total_rows_count * 100.0), 2) if total_rows_count > 0 else 0.0
+        null_count_in_column: int = int(source_dataframe[column_name].isna().sum())
+        if null_count_in_column > 0:
+            null_percentage_value: float = (
+                round((null_count_in_column / total_dataset_rows_count * 100.0), 2)
+                if total_dataset_rows_count > 0
+                else 0.0
             )
-            sample_non_nulls: list[str] = [
+            sample_non_null_values: list[str] = [
                 str(value)[:30] for value in source_dataframe[column_name].dropna().iloc[:3]
             ]
-            columns_with_missing_data.append(
-                (str(column_name), null_count, null_percentage, sample_non_nulls)
+            columns_with_missing_data_summary.append(
+                (str(column_name), null_count_in_column, null_percentage_value, sample_non_null_values)
             )
 
-    if not columns_with_missing_data:
+    if not columns_with_missing_data_summary:
         print("Status: Clean. No missing (NaN / null) values detected in any column.")
         remediation_config["drop_null_threshold_columns_percentage"] = 100.0
     else:
-        print(f"Detected {len(columns_with_missing_data)} column(s) containing missing values:\n")
+        print(f"Detected {len(columns_with_missing_data_summary)} column(s) containing missing values:\n")
         print(f"  {'Column Name':<25} {'Missing Count':<18} {'Null %':<10} {'Sample Non-Null Data'}")
         print("  " + "-" * 80)
-        for col_name, null_cnt, null_pct, sample_vals in columns_with_missing_data:
-            sample_representation: str = str(sample_vals) if sample_vals else "[Entirely Empty]"
+        for col_name, null_cnt, null_pct, sample_vals in columns_with_missing_data_summary:
+            sample_representation_str: str = str(sample_vals) if sample_vals else "[Entirely Empty]"
             print(
                 f"  {col_name[:24]:<25} "
-                f"{f'{null_cnt:,} / {total_rows_count:,}':<18} "
+                f"{f'{null_cnt:,} / {total_dataset_rows_count:,}':<18} "
                 f"{f'{null_pct}%':<10} "
-                f"{sample_representation}"
+                f"{sample_representation_str}"
             )
 
         null_filter_choice: str = prompt_user_selection(
@@ -1361,23 +1517,28 @@ def prompt_interactive_cleaning_configuration(
 
         if null_filter_choice == "y":
             while True:
-                threshold_input: str = input(
+                threshold_input_str: str = input(
                     "Enter maximum allowable null percentage [0 - 100] (e.g., 50 will drop columns with >50% nulls): "
                 ).strip()
                 try:
-                    threshold_value: float = float(threshold_input)
-                    if 0.0 <= threshold_value <= 100.0:
+                    threshold_float_val: float = float(threshold_input_str)
+                    if 0.0 <= threshold_float_val <= 100.0:
                         columns_to_drop_preview: list[str] = [
                             col_name
-                            for col_name, _, null_pct, _ in columns_with_missing_data
-                            if null_pct > threshold_value
+                            for col_name, _, null_pct, _ in columns_with_missing_data_summary
+                            if null_pct > threshold_float_val
                         ]
                         if columns_to_drop_preview:
-                            print(f"\n  [Impact Preview] Threshold {threshold_value}% will DROP {len(columns_to_drop_preview)} column(s):")
-                            for dropped_col in columns_to_drop_preview:
-                                print(f"    - '{dropped_col}'")
+                            print(
+                                f"\n  [Impact Preview] Threshold {threshold_float_val}% will DROP "
+                                f"{len(columns_to_drop_preview)} column(s):"
+                            )
+                            for dropped_col_name in columns_to_drop_preview:
+                                print(f"    - '{dropped_col_name}'")
                         else:
-                            print(f"\n  [Impact Preview] Threshold {threshold_value}% will NOT drop any columns.")
+                            print(
+                                f"\n  [Impact Preview] Threshold {threshold_float_val}% will NOT drop any columns."
+                            )
 
                         confirm_drop_choice: str = prompt_user_selection(
                             "Apply this column drop threshold?",
@@ -1385,137 +1546,216 @@ def prompt_interactive_cleaning_configuration(
                             "y",
                         )
                         if confirm_drop_choice == "y":
-                            remediation_config["drop_null_threshold_columns_percentage"] = threshold_value
+                            remediation_config["drop_null_threshold_columns_percentage"] = threshold_float_val
                             break
                     else:
                         print("Threshold must be between 0.0 and 100.0.")
                 except ValueError:
-                    print("Invalid input. Please enter a valid number (e.g. 50 or 75.5).")
+                    print("Invalid input. Please enter a valid decimal number (e.g. 50 or 75.5).")
 
-    # 5. Export Format & Destination
+    # =========================================================================
+    # STEP 6: Export Format & Destination Configuration
+    # =========================================================================
     print_section_divider("EXPORT FORMAT & DESTINATION")
-    target_format = prompt_user_selection(
+    target_export_format: str = prompt_user_selection(
         "Select output export format",
         ["csv", "jsonl", "json"],
         "jsonl",
     )
-    remediation_config["export_format"] = target_format
+    remediation_config["export_format"] = target_export_format
 
-    if target_format == "csv":
-        delimiter_selection = prompt_user_selection(
+    if target_export_format == "csv":
+        delimiter_selection_choice: str = prompt_user_selection(
             "Select CSV output delimiter",
             ["comma", "tab", "semicolon", "pipe"],
             "comma",
         )
-        delimiter_mapping = {"comma": ",", "tab": "\t", "semicolon": ";", "pipe": "|"}
-        remediation_config["export_delimiter"] = delimiter_mapping[delimiter_selection]
+        delimiter_mapping_dict: dict[str, str] = {
+            "comma": ",",
+            "tab": "\t",
+            "semicolon": ";",
+            "pipe": "|",
+        }
+        remediation_config["export_delimiter"] = delimiter_mapping_dict[delimiter_selection_choice]
 
     while True:
-        default_name = f"cleaned_dataset.{target_format}"
-        target_path_input = input(f"Enter target destination file path (Default: {default_name}): ").strip()
-        if not target_path_input:
-            target_path_input = default_name
+        default_file_name: str = f"cleaned_dataset.{target_export_format}"
+        target_path_input_str: str = input(
+            f"Enter target destination file path (Default: {default_file_name}): "
+        ).strip()
+        if not target_path_input_str:
+            target_path_input_str = default_file_name
 
         try:
-            target_directory = os.path.dirname(target_path_input)
-            if target_directory and not os.path.exists(target_directory):
-                os.makedirs(target_directory, exist_ok=True)
-            remediation_config["target_output_file_path"] = target_path_input
+            target_directory_path: str = os.path.dirname(target_path_input_str)
+            if target_directory_path and not os.path.exists(target_directory_path):
+                os.makedirs(target_directory_path, exist_ok=True)
+            remediation_config["target_output_file_path"] = target_path_input_str
             break
         except Exception as error_exception:
-            print(f"Invalid path or permission error: {error_exception}")
+            print(f"Invalid path or directory permission error: {error_exception}")
 
     return remediation_config
 
 
 def apply_dataset_cleaning_transformations(
-        source_dataframe: pd.DataFrame,
-        remediation_configuration: dict[str, Any],
-    ) -> pd.DataFrame:
-        """
-        Applies the configured remediation transformations to produce a cleaned DataFrame.
+    source_dataframe: pd.DataFrame,
+    remediation_configuration: dict[str, Any],
+) -> pd.DataFrame:
+    """
+    Applies the configured remediation transformations to produce a cleaned DataFrame.
+    Executes deduplication, near-duplicate removals, mixed-type column coercions,
+    multi-class to binary label consolidations, and null-heavy column drops.
 
-        Parameters:
-            source_dataframe (pd.DataFrame): The original input DataFrame.
-            remediation_configuration (dict[str, Any]): The cleaning configuration dictionary.
+    Parameters:
+        source_dataframe (pd.DataFrame): The original input DataFrame.
+        remediation_configuration (dict[str, Any]): The cleaning configuration dictionary
+            containing all user-specified remediation decisions.
 
-        Returns:
-            pd.DataFrame: The transformed and cleaned DataFrame.
-        """
-        transformed_dataframe: pd.DataFrame = source_dataframe.copy()
+    Returns:
+        pd.DataFrame: The transformed and cleaned DataFrame.
+    """
+    transformed_dataframe: pd.DataFrame = source_dataframe.copy()
 
-        try:
-            # 1. Drop Exact Duplicates
-            if remediation_configuration.get("drop_exact_duplicates", False):
-                strategy: str = remediation_configuration.get("duplicate_retention_strategy", "first")
-                initial_rows_count: int = len(transformed_dataframe)
-
-                if strategy in ["first", "last"]:
-                    transformed_dataframe = transformed_dataframe.drop_duplicates(keep=strategy)
-                elif strategy == "none":
-                    transformed_dataframe = transformed_dataframe.drop_duplicates(keep=False)
-
-                dropped_exact_count: int = initial_rows_count - len(transformed_dataframe)
-                print(f"[REMEDIATION] Dropped {dropped_exact_count:,} duplicate rows using strategy: '{strategy}'.")
-
-            # 2. Drop Identified Near-Duplicate Rows
-            near_duplicate_indices_to_drop: set[Any] = remediation_configuration.get(
-                "near_duplicate_indices_to_drop", set()
+    try:
+        # =====================================================================
+        # 1. Drop Exact Duplicate Rows
+        # =====================================================================
+        if remediation_configuration.get("drop_exact_duplicates", False):
+            duplicate_retention_rule: str = remediation_configuration.get(
+                "duplicate_retention_strategy", "first"
             )
-            if near_duplicate_indices_to_drop:
-                indices_present_in_dataframe: list[Any] = [
-                    row_index
-                    for row_index in near_duplicate_indices_to_drop
-                    if row_index in transformed_dataframe.index
-                ]
-                if indices_present_in_dataframe:
-                    transformed_dataframe = transformed_dataframe.drop(index=indices_present_in_dataframe)
-                    print(
-                        f"[REMEDIATION] Dropped {len(indices_present_in_dataframe):,} row(s) "
-                        f"selected from near-duplicate remediation."
-                    )
+            initial_rows_count: int = len(transformed_dataframe)
 
-            # 3. Remediate Mixed-Type Columns
-            mixed_type_actions: dict[str, str] = remediation_configuration.get("mixed_type_remediation_actions", {})
-            for column_name, action in mixed_type_actions.items():
-                if column_name not in transformed_dataframe.columns:
-                    continue
+            if duplicate_retention_rule in ["first", "last"]:
+                transformed_dataframe = transformed_dataframe.drop_duplicates(
+                    keep=duplicate_retention_rule
+                )
+            elif duplicate_retention_rule == "none":
+                transformed_dataframe = transformed_dataframe.drop_duplicates(keep=False)
 
-                if action == "numeric":
-                    transformed_dataframe[column_name] = pd.to_numeric(
-                        transformed_dataframe[column_name], errors="coerce"
-                    )
-                    print(f"[REMEDIATION] Coerced column '{column_name}' to numeric (invalid values set to NaN).")
-                elif action == "string":
-                    transformed_dataframe[column_name] = (
-                        transformed_dataframe[column_name].astype(str).replace("nan", "")
-                    )
-                    print(f"[REMEDIATION] Coerced column '{column_name}' to uniform string representation.")
-
-            # 4. Filter Columns Exceeding Null Percentage Threshold
-            null_threshold_pct: float = remediation_configuration.get("drop_null_threshold_columns_percentage", 100.0)
-            if null_threshold_pct < 100.0 and len(transformed_dataframe) > 0:
-                columns_to_drop: list[str] = []
-                for column_name in transformed_dataframe.columns:
-                    null_pct: float = (transformed_dataframe[column_name].isna().sum() / len(transformed_dataframe)) * 100.0
-                    if null_pct > null_threshold_pct:
-                        columns_to_drop.append(str(column_name))
-
-                if columns_to_drop:
-                    transformed_dataframe.drop(columns=columns_to_drop, inplace=True)
-                    print(
-                        f"[REMEDIATION] Dropped {len(columns_to_drop)} column(s) exceeding {null_threshold_pct}% nulls: "
-                        f"{columns_to_drop}"
-                    )
-
-            return transformed_dataframe
-
-        except Exception as error_exception:
-            sys.stderr.write(
-                f"[ERROR] Failed during dataset transformation.\n"
-                f"Traceback:\n{traceback.format_exc()}\n"
+            dropped_exact_count: int = initial_rows_count - len(transformed_dataframe)
+            print(
+                f"[REMEDIATION] Dropped {dropped_exact_count:,} duplicate rows using "
+                f"strategy: '{duplicate_retention_rule}'."
             )
-            return transformed_dataframe
+
+        # =====================================================================
+        # 2. Drop Identified Near-Duplicate Rows
+        # =====================================================================
+        near_duplicate_indices_to_drop: set[Any] = remediation_configuration.get(
+            "near_duplicate_indices_to_drop", set()
+        )
+        if near_duplicate_indices_to_drop:
+            indices_present_in_dataframe: list[Any] = [
+                row_index
+                for row_index in near_duplicate_indices_to_drop
+                if row_index in transformed_dataframe.index
+            ]
+            if indices_present_in_dataframe:
+                transformed_dataframe = transformed_dataframe.drop(index=indices_present_in_dataframe)
+                print(
+                    f"[REMEDIATION] Dropped {len(indices_present_in_dataframe):,} row(s) "
+                    f"selected from near-duplicate remediation."
+                )
+
+        # =====================================================================
+        # 3. Remediate Mixed-Type Columns
+        # =====================================================================
+        mixed_type_actions_dict: dict[str, str] = remediation_configuration.get(
+            "mixed_type_remediation_actions", {}
+        )
+        for column_name, conversion_action in mixed_type_actions_dict.items():
+            if column_name not in transformed_dataframe.columns:
+                continue
+
+            if conversion_action == "numeric":
+                transformed_dataframe[column_name] = pd.to_numeric(
+                    transformed_dataframe[column_name], errors="coerce"
+                )
+                print(f"[REMEDIATION] Coerced column '{column_name}' to numeric (invalid values set to NaN).")
+            elif conversion_action == "string":
+                transformed_dataframe[column_name] = (
+                    transformed_dataframe[column_name].astype(str).replace("nan", "")
+                )
+                print(f"[REMEDIATION] Coerced column '{column_name}' to uniform string representation.")
+
+        # =====================================================================
+        # 4. Multi-Class to Binary Class (0 and 1) Consolidation
+        # =====================================================================
+        binary_conversion_settings: dict[str, Any] = remediation_configuration.get(
+            "binary_class_conversion", {}
+        )
+        if binary_conversion_settings.get("enabled", False):
+            target_column_name: str = binary_conversion_settings.get("target_column_name", "")
+
+            if target_column_name in transformed_dataframe.columns:
+                zero_class_values_set: set[Any] = set(
+                    binary_conversion_settings.get("zero_class_values_list", [])
+                )
+                one_class_values_set: set[Any] = set(
+                    binary_conversion_settings.get("one_class_values_list", [])
+                )
+
+                def convert_cell_value_to_binary(cell_value: Any) -> Any:
+                    # Preserve existing missing / NaN values without artificial imputation
+                    if pd.isna(cell_value):
+                        return cell_value
+                    # Map designated baseline values to integer 0
+                    if cell_value in zero_class_values_set:
+                        return 0
+                    # Map designated remaining values to integer 1
+                    if cell_value in one_class_values_set:
+                        return 1
+                    # Fallback assignment for any unmapped non-null value
+                    return 1
+
+                transformed_dataframe[target_column_name] = transformed_dataframe[
+                    target_column_name
+                ].map(convert_cell_value_to_binary)
+
+                # Count final binary distribution for console audit confirmation
+                count_of_zero_values: int = int(
+                    (transformed_dataframe[target_column_name] == 0).sum()
+                )
+                count_of_one_values: int = int(
+                    (transformed_dataframe[target_column_name] == 1).sum()
+                )
+                print(
+                    f"[REMEDIATION] Converted column '{target_column_name}' to binary classes "
+                    f"(Class 0: {count_of_zero_values:,} rows, Class 1: {count_of_one_values:,} rows)."
+                )
+
+        # =====================================================================
+        # 5. Filter Columns Exceeding Null Percentage Threshold
+        # =====================================================================
+        null_threshold_pct: float = remediation_configuration.get(
+            "drop_null_threshold_columns_percentage", 100.0
+        )
+        if null_threshold_pct < 100.0 and len(transformed_dataframe) > 0:
+            columns_to_drop_list: list[str] = []
+            for column_name in transformed_dataframe.columns:
+                column_null_percentage: float = (
+                    transformed_dataframe[column_name].isna().sum() / len(transformed_dataframe)
+                ) * 100.0
+                if column_null_percentage > null_threshold_pct:
+                    columns_to_drop_list.append(str(column_name))
+
+            if columns_to_drop_list:
+                transformed_dataframe.drop(columns=columns_to_drop_list, inplace=True)
+                print(
+                    f"[REMEDIATION] Dropped {len(columns_to_drop_list)} column(s) exceeding "
+                    f"{null_threshold_pct}% null threshold: {columns_to_drop_list}"
+                )
+
+        return transformed_dataframe
+
+    except Exception as error_exception:
+        sys.stderr.write(
+            f"[FATAL ERROR] Dataset transformation failed with an unhandled exception.\n"
+            f"Traceback:\n{traceback.format_exc()}\n"
+        )
+        return transformed_dataframe
 
 
 def export_processed_dataset_file(

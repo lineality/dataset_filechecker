@@ -22,6 +22,12 @@
   - Near-duplicate pair resolution (auto-resolve or manual keep/drop/ignore per pair).
   - Mixed-type column coercion (`numeric`, `string`, or `keep`).
   - Missing-value column drop thresholds with live impact preview.
+  - **Interactive Remediation Wizard**:
+    - Deduplication strategy selection (`first`, `last`, `none`).
+    - Near-duplicate pair resolution (auto-resolve or manual keep/drop/ignore per pair).
+    - Mixed-type column coercion (`numeric`, `string`, or `keep`).
+    - Multi-class label binarization into binary `[0, 1]` classes.
+    - Missing-value column drop thresholds with live impact preview.
 - **Sanitized Multi-Format Export**: Serializes to CSV (custom delimiters), pretty JSON, or line-delimited JSON (JSONL), automatically collapsing internal newlines to preserve strict single-line record integrity.
 
 ---
