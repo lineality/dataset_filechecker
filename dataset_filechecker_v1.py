@@ -1996,7 +1996,8 @@ def main_execution_controller() -> None:
                 ) = prompt_near_duplicate_configuration(source_df)
 
                 if run_near_dupe_check:
-                    print("\n[INFO] Calculating Levenshtein distance on target text...")
+                    print("\n[INFO] Calculating Levenshtein distance on target text:")
+                    print("\n...this might take a while...")
                     target_cols_list = [target_text_col] if target_text_col else None
                     near_dupes = identify_near_duplicate_rows(
                         source_df,
