@@ -124,6 +124,28 @@ Python Standard: 3.10+ (Zero non-standard dependencies beyond pandas).
 
 """
 
+"""
+# Python Rules:
+
+- always extensive doc strings
+- NEVER remove (non-deprecated) docs from a doc string!!!! (e.g. when making a new version of a function)
+- always comments
+- always extremely clear unique names
+- never unsafe code
+- always try-except with traceback
+- always error handling
+- always clear specific meaningful helpful error messages (no error hiding)
+- always production safe code
+- clarity is a goal
+- communication is the goal
+- brevity is not a goal
+- aesthetics are not a goal
+- modular functional, not OOP (where possible)
+- no hard coding of environment variables
+- flat-file (unless project specifically requires otherwise)
+
+"""
+
 import argparse
 import csv
 import difflib
@@ -1349,127 +1371,138 @@ def prompt_interactive_cleaning_configuration(
             remediation_config["mixed_type_remediation_actions"][column_name] = action_choice
 
     # =========================================================================
-    # STEP 4: Multi-Class to Binary Class Label Consolidation
+    # STEP 4: Label Inspection & Multi-Class to Binary Consolidation
     # =========================================================================
-    print_section_divider("MULTI-CLASS TO BINARY LABEL CONSOLIDATION")
-    binarize_feature_choice: str = prompt_user_selection(
-        "Convert a multi-class column into binary values (0 and 1)?",
-        ["y", "n"],
-        "n",
-    )
+    print_section_divider("LABEL INSPECTION & MULTI-CLASS TO BINARY CONSOLIDATION")
 
-    if binarize_feature_choice == "y":
-        all_available_column_names: list[str] = list(source_dataframe.columns)
-        total_columns_count: int = len(all_available_column_names)
+    all_available_column_names: list[str] = list(source_dataframe.columns)
+    total_columns_count: int = len(all_available_column_names)
 
-        print("\nAvailable dataset columns:")
-        for column_index_counter, current_column_name in enumerate(all_available_column_names, start=1):
-            column_dtype_str: str = str(source_dataframe[current_column_name].dtype)
-            distinct_values_count: int = int(source_dataframe[current_column_name].nunique(dropna=True))
-            print(
-                f"  [{column_index_counter:<2}] {current_column_name:<30} "
-                f"Dtype: {column_dtype_str:<10} Distinct Values: {distinct_values_count}"
-            )
+    print("Available dataset columns:")
+    for column_index_counter, current_column_name in enumerate(all_available_column_names, start=1):
+        column_dtype_str: str = str(source_dataframe[current_column_name].dtype)
+        distinct_values_count: int = int(source_dataframe[current_column_name].nunique(dropna=True))
+        print(
+            f"  [{column_index_counter:<2}] {current_column_name:<30} "
+            f"Dtype: {column_dtype_str:<10} Distinct Values: {distinct_values_count}"
+        )
 
-        selected_target_column_name: str = ""
-        while True:
-            column_selection_input: str = input(
-                f"\nSelect column number to binarize (1 - {total_columns_count}): "
-            ).strip()
+    # 1. Ask user to select column to inspect
+    selected_target_column_name: str | None = None
+    while True:
+        column_selection_input: str = input(
+            f"\nSelect label/target column number to inspect (1 - {total_columns_count}) [or press Enter to skip]: "
+        ).strip()
 
-            if column_selection_input.isdigit():
-                selected_column_number: int = int(column_selection_input)
-                if 1 <= selected_column_number <= total_columns_count:
-                    selected_target_column_name = all_available_column_names[selected_column_number - 1]
-                    break
-                print(f"Selection out of range. Please enter an integer between 1 and {total_columns_count}.")
-            elif column_selection_input in all_available_column_names:
-                selected_target_column_name = column_selection_input
+        if not column_selection_input:
+            print("[INFO] Skipped label inspection and binary conversion.")
+            break
+
+        if column_selection_input.isdigit():
+            selected_column_number: int = int(column_selection_input)
+            if 1 <= selected_column_number <= total_columns_count:
+                selected_target_column_name = all_available_column_names[selected_column_number - 1]
                 break
-            else:
-                print(f"Invalid column entry '{column_selection_input}'. Please choose a valid column index number.")
+            print(f"Selection out of range. Please enter an integer between 1 and {total_columns_count}.")
+        elif column_selection_input in all_available_column_names:
+            selected_target_column_name = column_selection_input
+            break
+        else:
+            print(f"Invalid entry '{column_selection_input}'. Please choose a valid column index number or name.")
 
-        # Extract all unique non-null values with their occurrence frequencies
+    # 2. Show ALL classes/values in the selected column
+    if selected_target_column_name:
         target_series: pd.Series = source_dataframe[selected_target_column_name].dropna()
         distinct_label_value_counts: pd.Series = target_series.value_counts()
         unique_label_values_list: list[Any] = list(distinct_label_value_counts.index)
+        total_non_null_rows: int = len(target_series)
 
+        print(f"\nAll distinct classes/values in '{selected_target_column_name}' ({len(unique_label_values_list)} total):")
+        print(f"  {'#':<4} {'Class / Value':<35} {'Count':<15} {'Percentage'}")
+        print("  " + "-" * 65)
+        for label_index_counter, label_value in enumerate(unique_label_values_list, start=1):
+            label_occurrence_count: int = int(distinct_label_value_counts[label_value])
+            label_percentage: float = (
+                round((label_occurrence_count / total_non_null_rows * 100.0), 2)
+                if total_non_null_rows > 0
+                else 0.0
+            )
+            print(
+                f"  [{label_index_counter:<2}] {repr(str(label_value))[:33]:<35} "
+                f"{label_occurrence_count:<15,d} "
+                f"{label_percentage}%"
+            )
+
+        # 3. Ask whether to merge/binarize after user has reviewed all classes
         if len(unique_label_values_list) < 2:
             print(
                 f"\n[WARNING] Column '{selected_target_column_name}' contains only {len(unique_label_values_list)} "
-                f"distinct non-null value(s). Binarization requires at least 2 distinct values. Skipping."
+                f"distinct value(s). Binarization requires at least 2 classes. Skipping."
             )
         else:
-            print(f"\nUnique values found in column '{selected_target_column_name}':")
-            total_non_null_rows: int = len(target_series)
-            for label_index_counter, label_value in enumerate(unique_label_values_list, start=1):
-                label_occurrence_count: int = int(distinct_label_value_counts[label_value])
-                label_percentage: float = (
-                    round((label_occurrence_count / total_non_null_rows * 100.0), 2)
-                    if total_non_null_rows > 0
-                    else 0.0
-                )
-                print(
-                    f"  [{label_index_counter}] {repr(str(label_value)):<30} "
-                    f"({label_occurrence_count:,} rows, {label_percentage}%)"
-                )
+            binarize_feature_choice: str = prompt_user_selection(
+                f"\nConvert '{selected_target_column_name}' into binary values (0 and 1)?",
+                ["y", "n"],
+                "n",
+            )
 
-            # Prompt user to select which label(s) become Class 0
-            zero_class_values_list: list[Any] = []
-            while True:
-                zero_class_input_text: str = input(
-                    f"\nEnter the number(s) of the value(s) to set as 0 (comma-separated, e.g. 1 or 1,2): "
-                ).strip()
+            if binarize_feature_choice == "y":
+                zero_class_values_list: list[Any] = []
+                while True:
+                    zero_class_input_text: str = input(
+                        f"\nEnter number(s) of class(es) to map to 0 (comma-separated, e.g. 1 or 1,2): "
+                    ).strip()
 
-                if not zero_class_input_text:
-                    print("Input cannot be empty. Please enter at least one label index number for Class 0.")
-                    continue
+                    if not zero_class_input_text:
+                        print("Input cannot be empty. Select at least one class index for Class 0.")
+                        continue
 
-                parsed_selection_indices: list[int] = []
-                is_input_valid: bool = True
+                    parsed_selection_indices: list[int] = []
+                    is_input_valid: bool = True
 
-                for token in zero_class_input_text.split(","):
-                    cleaned_token: str = token.strip()
-                    if cleaned_token.isdigit():
-                        parsed_index: int = int(cleaned_token)
-                        if 1 <= parsed_index <= len(unique_label_values_list):
-                            parsed_selection_indices.append(parsed_index)
+                    for token in zero_class_input_text.split(","):
+                        cleaned_token: str = token.strip()
+                        if cleaned_token.isdigit():
+                            parsed_index: int = int(cleaned_token)
+                            if 1 <= parsed_index <= len(unique_label_values_list):
+                                parsed_selection_indices.append(parsed_index)
+                            else:
+                                print(f"Index {parsed_index} out of range [1 - {len(unique_label_values_list)}].")
+                                is_input_valid = False
+                                break
                         else:
-                            print(f"Index {parsed_index} is out of range [1 - {len(unique_label_values_list)}].")
+                            print(f"Invalid non-integer token: '{cleaned_token}'.")
                             is_input_valid = False
                             break
-                    else:
-                        print(f"Invalid non-integer token: '{cleaned_token}'.")
-                        is_input_valid = False
+
+                    if is_input_valid and parsed_selection_indices:
+                        selected_unique_indices_set: set[int] = set(parsed_selection_indices)
+                        if len(selected_unique_indices_set) == len(unique_label_values_list):
+                            print("Cannot map ALL classes to 0. At least one must remain for Class 1.")
+                            continue
+
+                        zero_class_values_list = [
+                            unique_label_values_list[idx - 1] for idx in selected_unique_indices_set
+                        ]
                         break
 
-                if is_input_valid and parsed_selection_indices:
-                    # Collect all selected labels for Class 0
-                    selected_unique_indices_set: set[int] = set(parsed_selection_indices)
-                    zero_class_values_list = [
-                        unique_label_values_list[idx - 1] for idx in selected_unique_indices_set
-                    ]
-                    break
+                one_class_values_list: list[Any] = [
+                    val for val in unique_label_values_list if val not in zero_class_values_list
+                ]
 
-            # All remaining unique labels automatically map to Class 1
-            one_class_values_list: list[Any] = [
-                val for val in unique_label_values_list if val not in zero_class_values_list
-            ]
+                print("\n" + "-" * 60)
+                print("[CONFIRMED BINARY CLASS MAPPING]")
+                print(f"  Target Column: '{selected_target_column_name}'")
+                print(f"  Values mapped to 0 (Negative/Baseline Class): {zero_class_values_list}")
+                print(f"  Values mapped to 1 (Positive Class):          {one_class_values_list}")
+                print("-" * 60)
 
-            # Print confirmed binary mapping summary
-            print("\n" + "-" * 60)
-            print("[CONFIRMED BINARY CLASS MAPPING]")
-            print(f"  Target Column: '{selected_target_column_name}'")
-            print(f"  Values mapped to 0 (Negative/Baseline Class): {zero_class_values_list}")
-            print(f"  Values mapped to 1 (Positive Class):          {one_class_values_list}")
-            print("-" * 60)
-
-            remediation_config["binary_class_conversion"] = {
-                "enabled": True,
-                "target_column_name": selected_target_column_name,
-                "zero_class_values_list": zero_class_values_list,
-                "one_class_values_list": one_class_values_list,
-            }
+                remediation_config["binary_class_conversion"] = {
+                    "enabled": True,
+                    "target_column_name": selected_target_column_name,
+                    "zero_class_values_list": zero_class_values_list,
+                    "one_class_values_list": one_class_values_list,
+                }
 
     # =========================================================================
     # STEP 5: Missing Values (Null) Column Drop Threshold Filtering
@@ -1585,6 +1618,11 @@ def prompt_interactive_cleaning_configuration(
         ).strip()
         if not target_path_input_str:
             target_path_input_str = default_file_name
+
+        # Re-prompt if the destination file already exists on disk
+        if os.path.exists(target_path_input_str):
+            print(f"[WARNING] File '{target_path_input_str}' already exists. Please choose a different path or name.")
+            continue
 
         try:
             target_directory_path: str = os.path.dirname(target_path_input_str)
