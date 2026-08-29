@@ -1267,21 +1267,24 @@ def prompt_interactive_cleaning_configuration(
 
     # Initialize the centralized configuration dictionary with standard default settings
     remediation_config: dict[str, Any] = {
-        "drop_exact_duplicates": False,
-        "duplicate_retention_strategy": "first",
-        "near_duplicate_indices_to_drop": set(),
-        "mixed_type_remediation_actions": {},
-        "binary_class_conversion": {
-            "enabled": False,
-            "target_column_name": "",
-            "zero_class_values_list": [],
-            "one_class_values_list": [],
-        },
-        "drop_null_threshold_columns_percentage": 100.0,
-        "export_format": "jsonl",
-        "export_delimiter": ",",
-        "target_output_file_path": "",
-    }
+            "drop_exact_duplicates": False,
+            "duplicate_retention_strategy": "first",
+            "near_duplicate_indices_to_drop": set(),
+            "mixed_type_remediation_actions": {},
+            "binary_class_conversion": {
+                "enabled": False,
+                "target_column_name": "",
+                "zero_class_values_list": [],
+                "one_class_values_list": [],
+            },
+            "designated_text_column": None,
+            "designated_label_column": None,
+            "displaced_column_renames": {},
+            "drop_null_threshold_columns_percentage": 100.0,
+            "export_format": "jsonl",
+            "export_delimiter": ",",
+            "target_output_file_path": "",
+        }
 
     # =========================================================================
     # STEP 1: Exact Duplicate Row Handling
@@ -1371,138 +1374,139 @@ def prompt_interactive_cleaning_configuration(
             remediation_config["mixed_type_remediation_actions"][column_name] = action_choice
 
     # =========================================================================
-    # STEP 4: Label Inspection & Multi-Class to Binary Consolidation
+    # STEP 4: Select 'text' & 'label' Columns (With Conflict Check & Binarization)
     # =========================================================================
-    print_section_divider("LABEL INSPECTION & MULTI-CLASS TO BINARY CONSOLIDATION")
-
-    all_available_column_names: list[str] = list(source_dataframe.columns)
-    total_columns_count: int = len(all_available_column_names)
+    print_section_divider("SELECT 'TEXT' AND 'LABEL' COLUMNS")
+    available_cols: list[str] = list(source_dataframe.columns)
+    total_columns_count: int = len(available_cols)
 
     print("Available dataset columns:")
-    for column_index_counter, current_column_name in enumerate(all_available_column_names, start=1):
-        column_dtype_str: str = str(source_dataframe[current_column_name].dtype)
-        distinct_values_count: int = int(source_dataframe[current_column_name].nunique(dropna=True))
+    for idx, col_name in enumerate(available_cols, start=1):
+        dtype_str: str = str(source_dataframe[col_name].dtype)
+        distinct_count: int = int(source_dataframe[col_name].nunique(dropna=True))
+        print(f"  [{idx:<2}] {col_name:<30} Dtype: {dtype_str:<10} Distinct Values: {distinct_count}")
+
+    # 1. Ask user to pick the TEXT column
+    while True:
+        text_choice: str = input(f"\nSelect column number for 'text' (1 - {total_columns_count}): ").strip()
+        if text_choice.isdigit() and 1 <= int(text_choice) <= total_columns_count:
+            chosen_text_col: str = available_cols[int(text_choice) - 1]
+            break
+        print(f"Invalid input. Please enter a number between 1 and {total_columns_count}.")
+
+    # 2. Ask user to pick the LABEL column
+    while True:
+        label_choice: str = input(f"Select column number for 'label' (1 - {total_columns_count}): ").strip()
+        if label_choice.isdigit() and 1 <= int(label_choice) <= total_columns_count:
+            chosen_label_col: str = available_cols[int(label_choice) - 1]
+            break
+        print(f"Invalid input. Please enter a number between 1 and {total_columns_count}.")
+
+    # 3. Conflict Resolution: Check if existing columns are already named 'text' or 'label'
+    displaced_renames: dict[str, str] = {}
+    if "text" in available_cols and chosen_text_col != "text":
+        old_text_new_name: str = input(
+            "\n[CONFLICT] An existing column is already named 'text'. "
+            "Rename old 'text' column to [Default: 'original_text']: "
+        ).strip()
+        displaced_renames["text"] = old_text_new_name if old_text_new_name else "original_text"
+
+    if "label" in available_cols and chosen_label_col != "label":
+        old_label_new_name: str = input(
+            "\n[CONFLICT] An existing column is already named 'label'. "
+            "Rename old 'label' column to [Default: 'original_label']: "
+        ).strip()
+        displaced_renames["label"] = old_label_new_name if old_label_new_name else "original_label"
+
+    remediation_config["designated_text_column"] = chosen_text_col
+    remediation_config["designated_label_column"] = chosen_label_col
+    remediation_config["displaced_column_renames"] = displaced_renames
+
+    print(f"\n[CONFIRMED]")
+    print(f"  'text'  <--- '{chosen_text_col}'")
+    print(f"  'label' <--- '{chosen_label_col}'")
+    if displaced_renames:
+        print(f"  Displaced renames: {displaced_renames}")
+
+    # 4. Show distinct classes for the chosen LABEL column
+    target_series: pd.Series = source_dataframe[chosen_label_col].dropna()
+    distinct_label_value_counts: pd.Series = target_series.value_counts()
+    unique_label_values_list: list[Any] = list(distinct_label_value_counts.index)
+    total_non_null_rows: int = len(target_series)
+
+    print(f"\nAll distinct classes in '{chosen_label_col}' ({len(unique_label_values_list)} total):")
+    print(f"  {'#':<4} {'Class / Value':<35} {'Count':<15} {'Percentage'}")
+    print("  " + "-" * 65)
+    for label_idx, label_value in enumerate(unique_label_values_list, start=1):
+        label_count: int = int(distinct_label_value_counts[label_value])
+        label_pct: float = (
+            round((label_count / total_non_null_rows * 100.0), 2)
+            if total_non_null_rows > 0
+            else 0.0
+        )
         print(
-            f"  [{column_index_counter:<2}] {current_column_name:<30} "
-            f"Dtype: {column_dtype_str:<10} Distinct Values: {distinct_values_count}"
+            f"  [{label_idx:<2}] {repr(str(label_value))[:33]:<35} "
+            f"{label_count:<15,d} "
+            f"{label_pct}%"
         )
 
-    # 1. Ask user to select column to inspect
-    selected_target_column_name: str | None = None
-    while True:
-        column_selection_input: str = input(
-            f"\nSelect label/target column number to inspect (1 - {total_columns_count}) [or press Enter to skip]: "
-        ).strip()
+    # 5. Ask whether to binarize (0 and 1)
+    if len(unique_label_values_list) >= 2:
+        binarize_choice: str = prompt_user_selection(
+            f"\nConvert '{chosen_label_col}' into binary values (0 and 1)?",
+            ["y", "n"],
+            "n",
+        )
 
-        if not column_selection_input:
-            print("[INFO] Skipped label inspection and binary conversion.")
-            break
+        if binarize_choice == "y":
+            while True:
+                zero_class_input: str = input(
+                    f"Enter number(s) of class(es) to map to 0 (comma-separated, e.g. 1 or 1,2): "
+                ).strip()
 
-        if column_selection_input.isdigit():
-            selected_column_number: int = int(column_selection_input)
-            if 1 <= selected_column_number <= total_columns_count:
-                selected_target_column_name = all_available_column_names[selected_column_number - 1]
-                break
-            print(f"Selection out of range. Please enter an integer between 1 and {total_columns_count}.")
-        elif column_selection_input in all_available_column_names:
-            selected_target_column_name = column_selection_input
-            break
-        else:
-            print(f"Invalid entry '{column_selection_input}'. Please choose a valid column index number or name.")
+                if not zero_class_input:
+                    print("Input cannot be empty. Select at least one class index for Class 0.")
+                    continue
 
-    # 2. Show ALL classes/values in the selected column
-    if selected_target_column_name:
-        target_series: pd.Series = source_dataframe[selected_target_column_name].dropna()
-        distinct_label_value_counts: pd.Series = target_series.value_counts()
-        unique_label_values_list: list[Any] = list(distinct_label_value_counts.index)
-        total_non_null_rows: int = len(target_series)
+                parsed_indices: list[int] = []
+                is_valid: bool = True
 
-        print(f"\nAll distinct classes/values in '{selected_target_column_name}' ({len(unique_label_values_list)} total):")
-        print(f"  {'#':<4} {'Class / Value':<35} {'Count':<15} {'Percentage'}")
-        print("  " + "-" * 65)
-        for label_index_counter, label_value in enumerate(unique_label_values_list, start=1):
-            label_occurrence_count: int = int(distinct_label_value_counts[label_value])
-            label_percentage: float = (
-                round((label_occurrence_count / total_non_null_rows * 100.0), 2)
-                if total_non_null_rows > 0
-                else 0.0
-            )
-            print(
-                f"  [{label_index_counter:<2}] {repr(str(label_value))[:33]:<35} "
-                f"{label_occurrence_count:<15,d} "
-                f"{label_percentage}%"
-            )
-
-        # 3. Ask whether to merge/binarize after user has reviewed all classes
-        if len(unique_label_values_list) < 2:
-            print(
-                f"\n[WARNING] Column '{selected_target_column_name}' contains only {len(unique_label_values_list)} "
-                f"distinct value(s). Binarization requires at least 2 classes. Skipping."
-            )
-        else:
-            binarize_feature_choice: str = prompt_user_selection(
-                f"\nConvert '{selected_target_column_name}' into binary values (0 and 1)?",
-                ["y", "n"],
-                "n",
-            )
-
-            if binarize_feature_choice == "y":
-                zero_class_values_list: list[Any] = []
-                while True:
-                    zero_class_input_text: str = input(
-                        f"\nEnter number(s) of class(es) to map to 0 (comma-separated, e.g. 1 or 1,2): "
-                    ).strip()
-
-                    if not zero_class_input_text:
-                        print("Input cannot be empty. Select at least one class index for Class 0.")
-                        continue
-
-                    parsed_selection_indices: list[int] = []
-                    is_input_valid: bool = True
-
-                    for token in zero_class_input_text.split(","):
-                        cleaned_token: str = token.strip()
-                        if cleaned_token.isdigit():
-                            parsed_index: int = int(cleaned_token)
-                            if 1 <= parsed_index <= len(unique_label_values_list):
-                                parsed_selection_indices.append(parsed_index)
-                            else:
-                                print(f"Index {parsed_index} out of range [1 - {len(unique_label_values_list)}].")
-                                is_input_valid = False
-                                break
-                        else:
-                            print(f"Invalid non-integer token: '{cleaned_token}'.")
-                            is_input_valid = False
-                            break
-
-                    if is_input_valid and parsed_selection_indices:
-                        selected_unique_indices_set: set[int] = set(parsed_selection_indices)
-                        if len(selected_unique_indices_set) == len(unique_label_values_list):
-                            print("Cannot map ALL classes to 0. At least one must remain for Class 1.")
-                            continue
-
-                        zero_class_values_list = [
-                            unique_label_values_list[idx - 1] for idx in selected_unique_indices_set
-                        ]
+                for token in zero_class_input.split(","):
+                    cleaned: str = token.strip()
+                    if cleaned.isdigit() and 1 <= int(cleaned) <= len(unique_label_values_list):
+                        parsed_indices.append(int(cleaned))
+                    else:
+                        print(f"Index '{cleaned}' is invalid or out of range.")
+                        is_valid = False
                         break
 
-                one_class_values_list: list[Any] = [
-                    val for val in unique_label_values_list if val not in zero_class_values_list
-                ]
+                if is_valid and parsed_indices:
+                    selected_set: set[int] = set(parsed_indices)
+                    if len(selected_set) == len(unique_label_values_list):
+                        print("Cannot map ALL classes to 0. At least one must remain for Class 1.")
+                        continue
 
-                print("\n" + "-" * 60)
-                print("[CONFIRMED BINARY CLASS MAPPING]")
-                print(f"  Target Column: '{selected_target_column_name}'")
-                print(f"  Values mapped to 0 (Negative/Baseline Class): {zero_class_values_list}")
-                print(f"  Values mapped to 1 (Positive Class):          {one_class_values_list}")
-                print("-" * 60)
+                    zero_class_list: list[Any] = [
+                        unique_label_values_list[idx - 1] for idx in selected_set
+                    ]
+                    one_class_list: list[Any] = [
+                        val for val in unique_label_values_list if val not in zero_class_list
+                    ]
 
-                remediation_config["binary_class_conversion"] = {
-                    "enabled": True,
-                    "target_column_name": selected_target_column_name,
-                    "zero_class_values_list": zero_class_values_list,
-                    "one_class_values_list": one_class_values_list,
-                }
+                    print("\n" + "-" * 60)
+                    print("[CONFIRMED BINARY CLASS MAPPING]")
+                    print(f"  Target Column: '{chosen_label_col}'")
+                    print(f"  Values mapped to 0 (Class 0): {zero_class_list}")
+                    print(f"  Values mapped to 1 (Class 1): {one_class_list}")
+                    print("-" * 60)
+
+                    remediation_config["binary_class_conversion"] = {
+                        "enabled": True,
+                        "target_column_name": chosen_label_col,
+                        "zero_class_values_list": zero_class_list,
+                        "one_class_values_list": one_class_list,
+                    }
+                    break
 
     # =========================================================================
     # STEP 5: Missing Values (Null) Column Drop Threshold Filtering
@@ -1785,6 +1789,29 @@ def apply_dataset_cleaning_transformations(
                     f"[REMEDIATION] Dropped {len(columns_to_drop_list)} column(s) exceeding "
                     f"{null_threshold_pct}% null threshold: {columns_to_drop_list}"
                 )
+
+        # =====================================================================
+        # 6. Rename user-selected columns to 'text' and 'label'
+        # =====================================================================
+        # Step A: Free up 'text'/'label' names if old columns held them
+        displaced_map: dict[str, str] = remediation_configuration.get("displaced_column_renames", {})
+        if displaced_map:
+            transformed_dataframe.rename(columns=displaced_map, inplace=True)
+
+        # Step B: Rename user-selected columns to 'text' and 'label'
+        target_text_col: str | None = remediation_configuration.get("designated_text_column")
+        target_label_col: str | None = remediation_configuration.get("designated_label_column")
+
+        rename_mapping: dict[str, str] = {}
+        if target_text_col and target_text_col in transformed_dataframe.columns and target_text_col != "text":
+            rename_mapping[target_text_col] = "text"
+
+        if target_label_col and target_label_col in transformed_dataframe.columns and target_label_col != "label":
+            rename_mapping[target_label_col] = "label"
+
+        if rename_mapping:
+            transformed_dataframe.rename(columns=rename_mapping, inplace=True)
+            print(f"[REMEDIATION] Output columns renamed: {rename_mapping}")
 
         return transformed_dataframe
 
