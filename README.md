@@ -5,7 +5,14 @@
 - dataset cleaning tool for CSV, TSV, JSON, and JSONL
 - terminal-cli or Q&A-interactive
 - checks include: broken rows, duplicate rows, near-duplicate rows, etc.
-- Only import that is not python-standard-library is `pandas`
+- Only required import that is not python-standard-library is `pandas` (one other, prompted, is optional)
+
+### Features:
+- Consolidate negative/0 classification label (many fields to one)
+- Consolidate positive/1 classification label (many fields to one)
+- Reads csv or json (pandas is flexible)
+- Checks and can remove exactly identical (e.g.) 'text' value rows
+- Checks and can remove or allow inspection and decision for Fuzzy-Near-Identical (e.g.) 'text' value rows
 
 ---
 
