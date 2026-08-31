@@ -1,0 +1,11 @@
+[tool.basedpyright]
+
+typeCheckingMode = "standard"
+# This tool intentionally traffics in Any for heterogeneous cell values,
+# row labels, and JSON payloads — that is the problem domain, not a defect.
+reportAny = false
+reportExplicitAny = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportUnknownLambdaType = false
