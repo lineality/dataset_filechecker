@@ -1072,7 +1072,7 @@ def identify_near_duplicate_rows(
 
         print(
             f"\n  [COMPLETED] Near-duplicate scan finished. "
-            f"Distance computations actually performed: {total_distance_computations_performed:,} "
+            f"Distance computations performed: {total_distance_computations_performed:,} "
             f"(vs. ~{(len(source_dataframe) * (len(source_dataframe) - 1)) // 2:,} brute-force pairs). "
             f"Total pairs flagged: {len(near_duplicate_records):,}\n",
             flush=True,
