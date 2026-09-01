@@ -1576,13 +1576,13 @@ def identify_near_duplicate_rows(
         # ------------------------------------------------------------------
         # STEP 1: Vectorized normalization (single pass, no per-row iterrows).
         # ------------------------------------------------------------------
-        raw_text_series: "pd.Series[str]" = (
+        raw_text_series: pd.Series[str] = (
             source_dataframe[evaluated_text_columns]
             .fillna("")
             .astype(str)
             .agg(" ".join, axis=1)
         )
-        normalized_text_series: "pd.Series[str]" = (
+        normalized_text_series: pd.Series[str] = (
             raw_text_series.str.lower().str.replace(r"[^a-z0-9]", "", regex=True)
         )
 
@@ -3308,12 +3308,12 @@ def export_processed_dataset_file(
 
         print(f"\n[SUCCESS] Successfully exported {len(export_df):,} records to: {target_file_path}")
 
-    except Exception as error_exception:
+    except Exception:
         sys.stderr.write(
             f"[FATAL ERROR] Failed to export processed dataset to: {target_file_path}\n"
             f"Traceback:\n{traceback.format_exc()}\n"
         )
-        raise error_exception
+        raise
 
 
 def prompt_near_duplicate_group_resolution(
@@ -3496,7 +3496,7 @@ def prompt_near_duplicate_group_resolution(
 
         return row_indices_designated_for_removal
 
-    except Exception as error_exception:
+    except Exception:
         sys.stderr.write(
             f"[ERROR] An unexpected error occurred during near-duplicate group resolution wizard.\n"
             f"Traceback:\n{traceback.format_exc()}\n"
